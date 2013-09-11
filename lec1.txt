@@ -1,0 +1,43 @@
+Lecture 1
+---------
+
+Moore's Law: 2x transistors/chip every 1.5 years
+Microprocessors have become smaller, denser, and more powerful
+
+So the transistor density of semiconductor chips double every 18 months
+
+Hardware-specific software:
+Advantage:
+Exploit hardware; fast; full functionality of device
+Disadvantage:
+You lose flexibility and evolv-ability and portability 
+
+VM:
+One machine appearing to be something it isn't,
+Give user the illusion that they have their own machine
+If it's in the cloud, it's like they're sitting on a physical machine,
+even if it's only a quarter of a real machine
+
+System VM:
+Supports execution of an entire OS (like Mac or Linux), ex: VMWare
+-- You can 'use' a Windows machine even if you're on Mac
+-- Remote Desktop, I think
+
+Process VM:
+Supports execution of a single program; Think of the JVM (Java
+Virtual Machine) ==> Same functionality running on any native operating
+System, whether it be Linux, Windows, Mac,...
+
+Each process thinks it has all memory/CPU time 
+and owns all devices
+
+Different devices appear to have same interface
+
+Fault Isolation:
+	- Processes unable to directly impact other processes
+	- Bugs cannot crash whole machine
+
+Can aid testing programs on other OSs!
+
+
+
