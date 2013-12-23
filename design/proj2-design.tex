@@ -1,0 +1,599 @@
+\documentclass{article}
+
+\usepackage[top=1in, bottom=1in, left=1in, right=1in]{geometry}
+
+\begin{document}
+
+\title{Project \#2 Multiprogramming}
+\author{Hamel Ajay Kothari (de), Maliena Guy (dd), Jack Wilson (dx), Bryan Cote-Chang (ed)}
+\date{Section 106, TA: Kevin Klues}
+\maketitle
+
+\section*{Task 1: FileSystem Calls}
+This section implements the file system calls creat, open, read, write, close, and unlink.
+We use the help of an array, called fileTable, which holds OpenFile objects, to hold our file descriptors, which contain details of open files. Each user process has its own unique fileTable.
+We support up to 16 concurrently open files per process, where each active file has a unique file descriptor, which is kept track of in the fileTable array.
+
+\subsection*{Correctness Constraints}
+\begin{itemize}
+\item There should be nothing a user program can do to crash the operating system, besides by explicitly calling halt()
+\item Only the first process in the system may call halt()
+\item Maximum length for strings passed as arguments to system calls is 256 bytes
+\item If a user process does anything illegal, causing the Processor to throw an exception, we don't crash. We instead return -1 (ensure this using try-catch blocks)
+\end{itemize}
+
+\subsection*{Declarations}
+\begin{itemize}
+\item \textit{OpenFile[] fileTable:} A table that holding file descriptors (explained in the Overview section as well)
+\item \textit{static int nextPID:} Initially 0. Incremented in the constructor every time a process is instantiated. Used to set the process id, PID, of each process.
+\item \textit{int PID:} Each instance of the class has a PID value that is set when it is instantiated. In the constructor, PID is set to the value of nextPID at that moment.  PID is used in handleHalt() to ensure that the root process is the one calling handleHalt().
+\item \textit{static Lock lock:} Used to prevent mis-assignment in the statement 'PID=nextPID'. 
+ 
+\end{itemize}
+\subsection*{Description}
+First off, inside the UserProcess constructor, we initialize the variables that
+were described in the declarations section. I won't detail what each variable
+does again, because I already did that in the declarations section, but the
+code will look as follows:
+\begin{verbatim}
+  public UserProcess(){
+    .... code already given to us ....
+    fileTable = new OpenFile[16];
+    fileTable[0] = UserKernel.console.openForReading();
+    fileTable[1] = UserKernel.console.openForWriting();
+
+    lock.acquire();
+    PID = nextPID++; // Set PID, then increment nextPID
+    lock.release();
+  }
+\end{verbatim}
+
+\begin{itemize}
+\item \b{Helper Functions:}
+\begin{enumerate}
+\item \textit{boolean isValidFN(String file\_name):} Make sure the file name isn't null and doesn't have a length of 0
+\item \textit{boolean isValidFD(int fd)}: Make sure a file descriptor is nonnegative, exists in the fileTable, and isn't greater than 16 (fileTable.length). The code is written below:
+\begin{verbatim}
+private boolean isValidFD(int fd){
+  if (fd < 0 || fd >= fileTable.length || fileTable[fd] == null){
+    return false; }
+  return true;
+}
+\end{verbatim}
+
+\item \textit{int openFile()} (extracted reused code from handleCreate and handleOpen). The \textit{openFile()} method pseudocode is below: 
+\begin{verbatim}
+int openFile(int f, boolean shouldCreate):
+    fd = 0;
+    isAvailable = false
+    for(fd = 0; fd < fileTable.length; fd++)
+        if(fileTable[fd] == null)
+            isAvailable = true;
+            break;
+    if(!isAvailable) return -1;
+    fileName = readVirtualMemoryString(f, 256);
+    if(!isValidFN(fileName)) return -1
+    OpenFile file = ThreadedKernel.fileSystem.open(fileName, shouldCreate)
+    if(file == null) return -1
+    fileTable[fd] = file;
+    return fd
+\end{verbatim}
+\item Then it's really easy to implement \textit{handleCreate} and \textit{handleOpen}:
+\begin{verbatim}
+private int handleCreate(int f){
+  return openFile(f, true);  
+}
+private int handleOpen(int f){
+  return openFile(f, false); 
+}
+\end{verbatim}
+
+\item \textit{handleHalt():} Do nothing and return if this isn't the root process. Otherwise call Machine.halt()
+\begin{verbatim}
+private int handleHalt(){
+  if(PID != 0) return -1;
+  Machine.halt();
+  Lib.assertNotReached(Machine.halt() did not halt machine!");
+  return 0;
+}
+\end{verbatim}
+
+\item \textit{handleRead(int fd, int buffer, int size):} 
+\begin{verbatim}
+    if (!isValidFD(fd) || size < 0) return -1; // This makes sure fd >= 0, fd < fileTable.length, and fileTable[fd] != null
+    Initialize a new byte array, called data, where data.length = size
+    int read = fileTable[fd].read(data, 0, size);
+    if(read <= 0) then return 0
+    return writeVirtualMemory(buffer, data, 0, read);
+\end{verbatim}
+
+\item \textit{handleWrite(int fd, int buffer, int size):} Very similar to \textit{handleRead}
+\begin{verbatim}
+    if (!isValidFD(fd) || size < 0) return -1; // This makes sure fd >= 0, fd < fileTable.length, and fileTable[fd] != null
+    Initialize a new byte array, called data, where data.length = size
+    int read = readVirtualMemory(buffer, data, 0, size);}
+    if read != size, then return 0
+    Otherwise return fileTable[fd].write(data, 0, size);
+\end{verbatim}
+
+\item \textit{handleClose(int fd):}
+\begin{verbatim}
+    if (!isValidFD(fd))  return -1
+    fileTable[fd].close()}
+    fileTable[fd] = null}
+    return 0
+\end{verbatim}
+
+\item For the unlink syscall:
+\begin{verbatim}
+handleUnlink(int addr)
+    fileName = readVirtualMemory(addr, 256)
+    if(!isValidFN(fileName)) return -1;
+    if(ThreadedKernel.fileSystem.remove(fileName)) return 0;
+    else return -1;
+\end{verbatim}
+\end{enumerate}
+
+\item \textit{handleSyscall(int syscall, int a0, int a1, int a2, int a3):}
+  \begin{verbatim}
+   switch(syscall):
+      case syscallCreate: return handleCreate(a0)
+      case syscallOpen: return handleOpen(a0)
+      case syscallRead: return handleRead(a0, a1, a2) 
+      case syscallWrite: return handleWrite(a0, a1, a2)
+      case syscallClose: return handleClose(a0)
+      case syscallUnlink: if(a0 < 0 || (str = readVirtualMemory(a0, 256)) == null){
+                            return -1;
+                          else return handleUnlink(readVirtualMemoryString(a0, 256)); 
+  \end{verbatim}
+
+\end{itemize}
+
+\subsection*{Testing Plan}
+We can test this by creating multiple user processes and then attempting the following:
+\begin{itemize}
+\item Create a file, open it, read it, write from buffer to the file, close it, and finally, unlink it.
+\item We also will try opening a file which is nonexistant, seeing if it is successfully created and then opened.
+\item We can also write a certain number of bytes to a file from a buffer and see what is returned (should be that number of bytes). We can then try reading that file and make sure that same number is returned.\newline
+\item We additionally can test the edge cases specified in the Correctness Constraints section, like having a non-root process
+\item attempt to call halt(), and see if this is handled correctly (-1 is returned, and nothing happens).
+\end{itemize}
+
+\section*{Task 2: Multiprogramming}
+
+\subsection*{Correctness Constraints}
+\begin{itemize}
+\item Each process can only use it's own virtual memory space(each physical address is only available to one process at a time)
+\item Program is loaded correctly ordered and contiguous in the virtual memory space
+\end{itemize}
+
+\subsection*{Declarations}
+\begin{itemize}
+\item freePages - A LinkedList in UserKernel which holds a TranslationEntry for each free page.
+\item static Lock memoryLock - A memory lock within the UserProcess code to synchronize memory accesses.
+\end{itemize}
+
+\subsection*{Description}
+
+The first step is to create a linked list containing all of the free pages that
+have yet to be allocated to a program. This will be stored in the UserKernel
+class. Each page will be represented by a TranslationEntry.
+
+\begin{verbatim} 
+(disable interrupts)
+for (int i = 0; i < Machine.processor().getNumPhysPages(); i++)
+    freePages.add(new TranslationEntry(0,i,false,false,false,false));
+(restore interrupts)
+\end{verbatim}
+
+To go with this list we create a \textit{requestFreePage()} method which returns a free
+page from the list or null if there is nothing and a \textit{submitFreePage()} method
+which clears all the fields from a submitted translation entry and adds it back
+to the page list.
+
+For \textit{UserProcess} the modifications that we will make to the constructor consist
+of removing the current code and creation of the page table.
+
+We will implement our own translation method as follows:
+\begin{verbatim}
+translate(vaddr, bool writing):
+    // calculate virtual page number and offset from the virtual address
+    int vpn = Processor.pageFromAddress(vaddr);
+    int offset = Processor.offsetFromAddress(vaddr);
+
+    TranslationEntry entry = null;
+
+    if (vpn >= pageTable.length || pageTable[vpn] == null || !pageTable[vpn].valid)
+        return -1;
+    entry = pageTable[vpn];
+
+    // check if trying to write a read-only page
+    if (entry.readOnly && writing)
+        return -1;
+
+    // check if physical page number is out of range
+    int ppn = entry.ppn;
+    if (ppn < 0 || ppn >= Machine.processor().getNumPhysPages())
+        return -1;
+
+    // set used and dirty bits as appropriate
+    entry.used = true;
+    if (writing)
+        entry.dirty = true;
+
+    int paddr = (ppn*pageSize) + offset;
+
+    return paddr;
+\end{verbatim}
+
+For read/writeVirturalMemory we use the above translation method to get the physical address bassed on the virtual address.
+\begin{itemize}
+\item \textit{readVirtualMemory}:
+\begin{verbatim}
+readVirtualMemory(int vaddr, byte[] data, int offset, int length):
+    Lib.assertTrue(offset >= 0 && length >= 0 && offset+length <= data.length);
+
+    byte[] memory = Machine.processor().getMemory();
+
+    int remaining = length;
+    int amountTransfered = 0;
+
+    // Transfer the first partial/full block
+    int currentVirtAddr = vaddr;
+    int currentAmountToTransfer = Math.min(pageSize-vaddr%pageSize,remaining);
+    int paddr = translate(currentVirtAddr,false);
+    if (paddr == -1) return amountTransfered;
+    System.arraycopy(memory, paddr, data, offset, currentAmountToTransfer);
+    currentVirtAddr += currentAmountToTransfer;
+    remaining -= currentAmountToTransfer;
+    amountTransfered += currentAmountToTransfer;
+
+    // Transfer full blocks
+    while (remaining > pageSize) {
+        paddr = translate(currentVirtAddr,false);
+        if (paddr == -1) return amountTransfered;
+        System.arraycopy(memory, paddr, data, offset+amountTransfered, pageSize);
+        currentVirtAddr += pageSize;
+        remaining -= pageSize;
+        amountTransfered += pageSize;
+    }
+    if (remaining > 0){
+        paddr = translate(currentVirtAddr,false);
+        if (paddr == -1) return amountTransfered;
+        System.arraycopy(memory, paddr, data, offset+amountTransfered, remaining);
+        amountTransfered += remaining;
+    }
+    return amountTransfered;
+\end{verbatim}
+ 
+\item \textit{writeVirtualMemory}:
+\begin{verbatim}
+writeVirtualMemory(int vaddr, byte[] data, int offset, int length):
+    Lib.assertTrue(offset >= 0 && length >= 0 && offset+length <= data.length);
+
+    byte[] memory = Machine.processor().getMemory();
+
+    int amountTransfered = 0;
+    int remaining = length;
+
+    // Transfer our first section may or may not be full block
+    int currentVirtAddr = vaddr;
+    int currentAmountToTransfer = Math.min(pageSize-(currentVirtAddr % pageSize),remaining);
+    int paddr = translate(currentVirtAddr,true);
+    if (paddr == -1) return amountTransfered;
+    System.arraycopy (data, offset, memory, paddr, currentAmountToTransfer);
+    amountTransfered += currentAmountToTransfer;
+    currentVirtAddr += currentAmountToTransfer;
+    remaining -= currentAmountToTransfer;
+
+    // Let's transfer full blocks at a time
+    while (remaining > pageSize) {
+        paddr = translate(currentVirtAddr,true);
+        if (paddr == -1) return amountTransfered;
+        System.arraycopy(data, offset+amountTransfered, memory, paddr, pageSize);
+        amountTransfered += pageSize;
+        currentVirtAddr += pageSize;
+        remaining -= pageSize;
+    }
+
+    // Is there a partial block left?
+    if (remaining > 0) {
+        paddr = translate(currentVirtAddr,true);
+        if (paddr == -1) return amountTransfered;
+        System.arraycopy(data, offset+amountTransfered, memory, paddr, remaining);
+        amountTransfered += remaining;
+    }
+    return amountTransfered;
+\end{verbatim}
+\end{itemize}
+
+For our \textit{loadSections} method we first create a pageTable that can hold
+all the necessisary pages for the program and the stack. We then pull each
+TranslationEntry from the free pages and assign it the virtual page number that
+is associated with each section in the coff. We then add 8 more pages to the
+table for the stack.
+
+\begin{verbatim}
+loadSections():
+    memoryLock.acquire();
+    if (numPages+stackPages > UserKernel.freePageCount()) {
+        coff.close();
+        Lib.debug(dbgProcess, "\tinsufficient physical memory");
+        memoryLock.release();
+        return false;
+    }
+
+    pageTable = new TranslationEntry[numPages];
+    for (int s=0; s<coff.getNumSections(); s++) {
+        CoffSection section = coff.getSection(s);
+        Lib.debug(dbgProcess, "\tinitializing " + section.getName() + " section (" + section.getLength() + " pages)");
+        for (int i=0; i<section.getLength(); i++) {
+            int vpn = section.getFirstVPN()+i;
+            pageTable[vpn] = UserKernel.requestFreePage();
+            pageTable[vpn].vpn = vpn;
+            pageTable[vpn].valid = true;
+            if (section.isReadOnly()) {
+                pageTable[vpn].readOnly = true;
+            }
+            section.loadPage(i, pageTable[vpn].ppn);
+        }
+    }
+    for (int i = 0; i<stackPages+1; i++) {
+        pageTable [numPages-stackPages-1+i] = UserKernel.requestFreePage();
+        pageTable [numPages-stackPages-1+i].vpn = numPages+i;
+        pageTable [numPages-stackPages-1+i].valid = true;
+    }
+    memoryLock.release();
+
+    return true;
+\end{verbatim}
+
+For our \textit{unloadSections} method we need to release our pages and clean out translation entries:
+\begin{verbatim}
+unloadSections():
+    memoryLock.acquire();
+    for (int i = 0; i<pageTable.length; i++) {
+        UserKernel.submitFreePage(pageTable[i]);
+    }
+    memoryLock.release();
+\end{verbatim}
+
+\subsection*{Testing Plan}
+
+Start up the virtual machine and load in multiple user programs that constantly
+modify their data and see if the programs have their data protected between
+context switches.
+
+\section*{Task 3: System Calls}
+
+\subsection*{Correctness Constraints}
+We can break our correctness constraits into 3 parts for the 3 handlers we have to write: \textit{exitHandler},
+\textit{execHandler} and \textit{joinHandler}.
+
+For \textit{exitHandler}:
+\begin{itemize}
+\item Process is terminated immediately.
+\item Ensure all file descriptors are closed.
+\item Ensure that the status is appropriately set.
+\item Check to see if the parent of our thread is waiting for us to join and wake it up.
+\item This thread is \textit{finish()}ed
+\end{itemize}
+
+For \textit{execHandler}:
+\begin{itemize}
+\item Ensure that the correct program is executed.
+\item Check that a new child process is created with a unique ID.
+\item Ensure that the correct child process ID is returned or -1 if the process creation fails.
+\end{itemize}
+
+And finally for our \textit{joinHandler}:
+\begin{itemize}
+\item Check for correct process suspension.
+\item Check if correct child is processed.
+\item Ensure that parent is put to sleep and woken up appropriately.
+\item Ensure that the current process disowns the child it called join on after completion.
+\end{itemize}
+
+\subsection*{Declarations}
+
+In order to keep track of the state of our process and its children in this part we will need to declare the following
+variables:
+\begin{itemize}
+\item \textit{exitCode} - the return code of our process, determined by whether it exited normally or with an exception
+\item \textit{exited} - a boolean to keep track of whether the process has already exited.
+\item \textit{abnormalExit} - keep track of whether the process abnormally exited
+\item \textit{parentProcess} - the process which spawned this process.
+\item \textit{waitingParent} - a boolean which keeps track of whether the parent has called \textit{join} on our thread.
+\item \textit{childProcesses} - a list which maintains the children of our given process.
+\item \textit{runningProcesses} - a static to track the runningProcesses so we can call halt when the last one exits.
+\end{itemize}
+
+\subsection*{Description}
+We can begin our implementation for this part with handler methods for each of our syscalls:
+\begin{itemize}
+\item exitHandler:
+\begin{verbatim}
+exitHandler(int exitCode)
+    (disable interrupts)
+    this.exitCode = exitCode // Specified to be -1 if abnormal exit
+	for(int fd : openFiles)
+        closeFile(fd)
+    coff.close();
+    unloadSections() 
+    
+    exited = true
+    if(waitingParent)
+        parentProcess.wake() // Puts our parent process's thread back on the ready queue
+    
+    runningProcs--;
+    (restore interrupts)
+    if(runningProcs == 0)
+        Kernel.kernel.terminate();
+    else
+        this.finish() //to kill our thread an schedule it for deletion
+\end{verbatim}
+\item execHandler: 
+\begin{verbatim}
+execHandler(string file, int argc, string[] argv) 
+    (disable interrupts)
+    String fileName = readVirtualMemoryString(fAddr, 256)
+    if(!isValidFN(fileName) || fileName.endsWith(".coff")) return -1;
+
+    String[] argsArray = new String[argsCount]
+    byte[] argvPointers = new byte[argCount * 4]
+    readVirtualMemory(argvAddr, argvPointers)
+    for(int i = 0; i < argCount; i++) {
+        int strPtr = Lib.bytesToInt(argvPointers, i*4);
+        argsArray[i] = readVirtualMemoryString(strPtr, 256);
+    }
+
+    newProcess = newUserProcess() 
+    newProcess.parentThread = KThread.currentThread();
+    children.put(newProcess);
+    if(!newProcess.execute(file, argv))
+        runningProcs--;
+        return -1;
+    (restore interrupts)
+    return newProcess.PID 
+\end{verbatim}
+\item joinHandler: Handles the joining between a parent and child process, it returns the 
+exit status of the child process.  Implementation is listed under the method's requirement.
+\begin{verbatim}
+joinHandler(int pid, int status)
+    (disable interrupts)
+    childProc = children.get(pid);
+    if(childProc == null) return -1
+    if(!childProc.exited)
+        childProc.waitingParent = true;
+        KThread.sleep()
+    
+    writeToVirtualMemory(status, Lib.bytesFromInt(childProc.exitCode))
+    childProcesses.remove(childProc)
+    (restore interrupts)
+    return child.abnormalExit ? 0 : 1
+\end{verbatim}
+\end{itemize}
+
+To get our required calling of halt after the last process we must also add an increment
+to the runningProcs variable in the constructor of each new UserProcess.
+
+Then we also want to add to the exception handler, a call to \textit{exit()} to make sure all
+the process's resources are released and we should set the \textit{abnormalExit} flag to true
+for that thread.
+
+\subsection*{Testing Plan}
+
+In order to test this section we can write a few C programs which test out our syscalls.
+The first two programs which will be helper programs will print a message (which can be used to
+identify them when debugging) and have one exit normally which the other intentionally fails.
+
+Next we will write a third program which will trigger execution for the other two and examine
+their exit codes.
+
+\section*{Task 4: Lottery Scheduler}
+
+\subsection*{Correctness Constraints}
+\begin{itemize}
+\item Effective priority of a ticket holder is the sum of all the donated tickets plus it's own, not the max.
+\item Our solution should work for an incredibly large number of tickets in the system, ie. no array storage of tickets.
+\item Increase priority should give a process one more ticket and decrease priority should do the opposite.
+\item The total number of tickets cannot exceed \textit{Integer.MAX\_VALUE}, hence the maximum prority is
+\textit{Integer.MAX\_VALUE} and the minimum value is increased to 1.
+\end{itemize}
+
+\subsection*{Declarations}
+In our LotteryScheduler class we will have to make the following declarations:
+\begin{itemize}
+\item \textit{outstandingTickets}
+\item \textit{MINIMUM\_PRIORITY} the minimum priority (number of tickets for a thread), 1.
+\item \textit{DEFAULT\_PRIORITY} the default priority value to start with, 1.
+\end{itemize}
+
+\subsection*{Description}
+
+We can create a new LotteryThreadState class which extends our ThreadState from our PriorityScheduler class to deal
+with our LotteryScheduler's thread state information. We will also refactor our \textit{recalculateEffectivePriority()}
+method in ThreadState, extracting the logic where we check the effective priorities from the owned queues to gather
+donations into a \textit{gatherDonations()} method. Then we can override that method in our LotteryThreadState to
+return the sum of the donated priorities. So, in our original thread state the method would look like this:
+\begin{verbatim}
+gatherDonations(int currPriority)
+    int newEffective = currPriority;
+    for(PriorityQueue owned : ownedQueues)
+        ThreadState ts = owned.pickNextThread()
+        if(ts != null)
+            int tsEffective = ts.getEffectivePriority()
+            newEffective = Math.max(newEffective, tsEffective)
+    return newEffective
+\end{verbatim}
+And in our LotteryThreadState will implement the method as follows:
+\begin{verbatim}
+gatherDonations(int currPriority)
+    int newEffective = currPriority;
+    for(PriorityQueue owned : ownedQueues)
+        for(ThreadState ts : owned.stateQueue)
+            newEffective += ts.getEffectivePriority()
+    return newEffective
+\end{verbatim}
+
+Now to get this thread state to be put into use and to satisfy the correctness constraints we need to reimplement
+the following methods: \textit{getThreadState()}, \textit{setPriority()}, \textit{increasePriority()} and
+\textit{decreasePriority()}
+
+The \textit{getThreadState()} method should work in a pretty similar method to the one in PriorityQueue, but instead
+of creating a ThreadState object in the absence of a thread state for a given thread we create a LotteryThreadState.
+
+For the \textit{setPriority()} we must ensure that we're not adding more tickets then would be availible in the 
+system and we're setting the priority to a value greater than one. So it would look like the following:
+\begin{verbatim}
+setPriority(thread, priority)
+    assert(Machine.interrupt().disabled())
+    LotteryThreadState ts = getThreadState(ts)
+    int oldPriority = ts.getPriority()
+    assert(priority >= priorityMinimum && (outstandingTickets - oldPriority + priority) <= Integer.MAX_INT)
+    ts.setPriority(priority)
+\end{verbatim}
+
+For the \textit{increasePriority()} and \textit{decreasePriority()} methods we also perform similar logic to the
+logic used in PriorityQueue, but instead of checking against the maximum priority for the increase method we perform
+the same check above, ensuring that the number of outstanding tickets will be less than the max outstanding, and
+we check against our minimum for the decrease method.
+
+Finally, as far as the lottery actually goes, we just need to override the pickNextThread in our LotteryQueue: 
+\begin{verbatim}
+pickNextThread()
+    // Retrieve queue as array for easy navigation
+    ThreadState[] queueArray = new ThreadState[1]; // Ps. this is dumb. jdk you've made me sad
+    queueArray = stateQueue.toArray(queueArray);
+    // Calculate the totalTickets in the queue
+    int totalTickets = 0;
+    for(ThreadState ts : queueArray)
+        totalTickets += ts.getEffectivePriority();
+    
+    // Draw the zero indexed ticket
+    int ticketDrawn = Lib.random(totalTickets);
+    int countedTickets = 0;
+    for(int i = 0; i < queueArray.length; i++)
+        ThreadState curr = queueArray[i];
+        int currTickets = curr.getEffectivePriority();
+        if(ticketDrawn < countedTickets + currTickets && ticketDrawn >= countedTickets)
+            return curr;
+        countedTickets += currTickets;
+    
+    // This is the case there are no elements.
+    return null;
+\end{verbatim}
+
+\subsection*{Testing Plan}
+
+We can test this part in a similar manner to the PriorityQueue. As a simple sanity check we will create 5 dummy
+threads with 3 LotteryQueues (created via a LotteryScheduler). Then we will waitForAccess on \textit{q1}...\textit{q3}
+using \textit{t1}...\textit{t3} respectively, and we will give access to each of those queues by calling acquire for
+\textit{t2}...\textit{t4}. Now \textit{getEffectivePriority()} on \textit{t4} should be 4, since it gets the donation
+from \textit{t3} which gets a donation from \textit{t2} which in turn gets a donation \textit{t1} thus summing all the
+donations you should get a total effective priority of 4. Then we can set the priority of \textit{t1} to 6 and we would
+expect the priority of \textit{t4} to be 9. Then if we have our 5th thread, \textit{t5}, wait on \textit{q1}, and set
+it's priority to be 10, we expect \textit{t4} to have an effective priority of 19. Finally if we call
+\textit{q1.nextThread()} we expect \textit{t4} to have an effective priority of 1 again, and \textit{t1} to have an
+effective priority of 13, taking it's own priority plus it's donation from \textit{t5}.
+\end{document}
